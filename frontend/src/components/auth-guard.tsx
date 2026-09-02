@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
+import { Skeleton } from "@/components/ui/skeleton";
 import { useSession } from "@/hooks/use-session";
 
 /**
@@ -22,8 +23,12 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
 
   if (isLoading || !session) {
     return (
-      <div className="flex flex-1 items-center justify-center">
-        <p className="text-muted-foreground text-sm">Loading…</p>
+      <div className="flex-1 space-y-6 p-6">
+        <div className="space-y-2">
+          <Skeleton className="h-6 w-48" />
+          <Skeleton className="h-4 w-72" />
+        </div>
+        <Skeleton className="h-40 w-full" />
       </div>
     );
   }

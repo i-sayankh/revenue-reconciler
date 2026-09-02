@@ -19,6 +19,7 @@ import { DiscrepancyTable } from "@/components/dashboard/discrepancy-table";
 import { ExplanationPanel } from "@/components/dashboard/explanation-panel";
 import type { RunSummary } from "@/components/dashboard/stat-cards";
 import { StatCards } from "@/components/dashboard/stat-cards";
+import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError, fetchApi } from "@/lib/api";
 
 const PAGE_SIZE = 20;
@@ -143,8 +144,18 @@ export default function DashboardPage() {
 
   if (isLoadingRun) {
     return (
-      <div className="flex flex-1 items-center justify-center">
-        <p className="text-muted-foreground text-sm">Loading…</p>
+      <div className="flex-1 space-y-6 p-6">
+        <div className="space-y-1">
+          <Skeleton className="h-7 w-64" />
+          <Skeleton className="h-4 w-80" />
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <Skeleton key={index} className="h-24 w-full" />
+          ))}
+        </div>
+        <Skeleton className="h-72 w-full" />
+        <Skeleton className="h-96 w-full" />
       </div>
     );
   }

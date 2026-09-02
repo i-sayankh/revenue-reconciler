@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -115,10 +116,18 @@ export function DiscrepancyTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {results.length === 0 ? (
+            {isLoading ? (
+              Array.from({ length: 5 }).map((_, index) => (
+                <TableRow key={`skeleton-row-${index}`}>
+                  <TableCell colSpan={6} className="py-3">
+                    <Skeleton className="h-5 w-full" />
+                  </TableCell>
+                </TableRow>
+              ))
+            ) : results.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                  {isLoading ? "Loading…" : "No discrepancies match these filters."}
+                  No discrepancies match these filters.
                 </TableCell>
               </TableRow>
             ) : (
@@ -157,7 +166,7 @@ export function DiscrepancyTable({
         </Table>
       </div>
 
-      <div className="flex items-center justify-between text-sm text-muted-foreground">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
         <span>
           {total === 0
             ? "0 results"
