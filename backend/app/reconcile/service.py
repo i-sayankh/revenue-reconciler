@@ -292,39 +292,47 @@ async def persist_run(
 ) -> ReconciliationRun:
     """Insert one `reconciliation_runs` row and one `discrepancies` row per
     per-order classification + orphan payment, and return the persisted run.
+
+    Both inserts happen inside a single `connection.transaction()` block so
+    a failure between them (a dropped connection, a pool eviction) can never
+    leave an orphaned run row with zero discrepancies -- which would make
+    `GET /api/reconcile/runs/latest` serve nonzero headline totals against
+    an empty `/api/discrepancies` list, undermining the one thing this
+    feature exists to get right (trustworthy financial numbers).
     """
     user_uuid = uuid.UUID(str(user_id))
-    record = await connection.fetchrow(
-        _INSERT_RUN_SQL,
-        user_uuid,
-        orders_count,
-        payments_count,
-        result.reconciled_value,
-        compute_disputed_value(result),
-        result.money_at_risk,
-        "complete",
-    )
-    run = ReconciliationRun.from_record(record)
+    async with connection.transaction():
+        record = await connection.fetchrow(
+            _INSERT_RUN_SQL,
+            user_uuid,
+            orders_count,
+            payments_count,
+            result.reconciled_value,
+            compute_disputed_value(result),
+            result.money_at_risk,
+            "complete",
+        )
+        run = ReconciliationRun.from_record(record)
 
-    inserts = build_discrepancy_inserts(result)
-    if inserts:
-        values = [
-            (
-                run.id,
-                user_uuid,
-                item.type,
-                item.order_id,
-                item.payment_ref,
-                item.order_amount,
-                item.payment_amount,
-                item.currency_order,
-                item.currency_payment,
-                item.difference,
-                item.detail,
-            )
-            for item in inserts
-        ]
-        await connection.executemany(_INSERT_DISCREPANCIES_SQL, values)
+        inserts = build_discrepancy_inserts(result)
+        if inserts:
+            values = [
+                (
+                    run.id,
+                    user_uuid,
+                    item.type,
+                    item.order_id,
+                    item.payment_ref,
+                    item.order_amount,
+                    item.payment_amount,
+                    item.currency_order,
+                    item.currency_payment,
+                    item.difference,
+                    item.detail,
+                )
+                for item in inserts
+            ]
+            await connection.executemany(_INSERT_DISCREPANCIES_SQL, values)
 
     return run
 
@@ -350,12 +358,31 @@ async def fetch_by_type_summary(connection: asyncpg.Connection, run_id: uuid.UUI
     for ORPHAN_PAYMENT rows (which have no order to attach a value to).
     Only types with at least one row appear (no zero-count rows); ordered
     alphabetically by type for a stable response.
+
+    The RECONCILED bucket's `count` includes every RECONCILED row (both the
+    `verified` and `no_charge_activity` sub-flavors -- see
+    `app.engine.reconcile`'s `ReconciledReason`), but its `value` excludes
+    `no_charge_activity` rows, contributing $0 for each. This keeps it
+    consistent with the run's own `total_reconciled_value` (the engine's
+    `ReconciliationResult.reconciled_value`, which excludes that fallback
+    flavor for exactly the same reason: nothing was actually verified for
+    those orders, so their value must not inflate "money reconciled"). Without
+    this exclusion, `GET /api/reconcile/runs/latest`'s stat card
+    (`total_reconciled_value`) and its chart (`by_type`) could show two
+    different numbers for "reconciled" on the same run.
     """
     records = await connection.fetch(
         """
         select type,
                count(*) as count,
-               coalesce(sum(coalesce(order_amount, payment_amount)), 0) as value
+               coalesce(sum(
+                   case
+                       when type = 'RECONCILED'
+                            and coalesce(detail ->> 'reconciled_reason', '') = 'no_charge_activity'
+                       then 0
+                       else coalesce(order_amount, payment_amount)
+                   end
+               ), 0) as value
         from discrepancies
         where run_id = $1
         group by type

@@ -132,7 +132,11 @@ async def get_latest_run(
     `by_type` only lists types with at least one discrepancy row in the run
     (no zero-count entries) and is ordered alphabetically by type. Its
     `value` is that type's total `order_amount` (falling back to
-    `payment_amount` for ORPHAN_PAYMENT rows, which have no order).
+    `payment_amount` for ORPHAN_PAYMENT rows, which have no order). The
+    RECONCILED bucket's `value` deliberately excludes the engine's
+    `NO_CHARGE_ACTIVITY` fallback rows (its `count` still includes them) so
+    it always matches `run.total_reconciled_value` -- see
+    `app.reconcile.service.fetch_by_type_summary`'s docstring.
     """
     run = await service.fetch_latest_run(connection, user_id)
     if run is None:

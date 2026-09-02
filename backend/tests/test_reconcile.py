@@ -226,9 +226,14 @@ class _FakeConnection:
             rows = [r for r in self.discrepancies if r["run_id"] == run_id]
             agg: dict[str, dict[str, Any]] = {}
             for r in rows:
-                value = r["order_amount"] if r["order_amount"] is not None else r["payment_amount"]
                 bucket = agg.setdefault(r["type"], {"type": r["type"], "count": 0, "value": Decimal("0")})
                 bucket["count"] += 1
+                is_no_charge_activity = (
+                    r["type"] == "RECONCILED" and (r["detail"] or {}).get("reconciled_reason") == "no_charge_activity"
+                )
+                if is_no_charge_activity:
+                    continue
+                value = r["order_amount"] if r["order_amount"] is not None else r["payment_amount"]
                 bucket["value"] += value or Decimal("0")
             return [agg[t] for t in sorted(agg)]
         if norm.startswith("select * from discrepancies where"):
@@ -291,6 +296,45 @@ class _FakeConnection:
                 )
             return
         raise AssertionError(f"unexpected executemany SQL: {sql}")
+
+    def transaction(self) -> "_FakeTransaction":
+        """Mimics `asyncpg.Connection.transaction()`: on `__aexit__` with an
+        active exception, discards whatever this connection's `runs`/
+        `discrepancies` lists picked up since `__aenter__`, simulating a
+        rollback so `persist_run`'s atomicity can be tested without Postgres.
+        """
+        return _FakeTransaction(self)
+
+
+class _FakeTransaction:
+    def __init__(self, connection: "_FakeConnection"):
+        self._connection = connection
+        self._runs_snapshot: list[dict[str, Any]] | None = None
+        self._discrepancies_snapshot: list[dict[str, Any]] | None = None
+
+    async def __aenter__(self) -> "_FakeTransaction":
+        self._runs_snapshot = list(self._connection.runs)
+        self._discrepancies_snapshot = list(self._connection.discrepancies)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        if exc_type is not None:
+            self._connection.runs = self._runs_snapshot
+            self._connection.discrepancies = self._discrepancies_snapshot
+        return False
+
+
+class _FailingDiscrepancyInsertConnection(_FakeConnection):
+    """Same as `_FakeConnection`, but `executemany` into `discrepancies`
+    always raises -- used to prove `persist_run`'s transaction rolls back
+    the already-inserted `reconciliation_runs` row when the second insert
+    fails partway through.
+    """
+
+    async def executemany(self, sql, values):
+        if self._norm(sql).startswith("insert into discrepancies"):
+            raise RuntimeError("simulated discrepancies insert failure")
+        return await super().executemany(sql, values)
 
 
 def _order_dict(row: OrderRow, *, user_id: uuid.UUID, batch_id: uuid.UUID, created_at: datetime) -> dict[str, Any]:
@@ -411,6 +455,34 @@ async def test_persist_run_computes_expected_totals_and_inserts_all_rows(seeded_
     assert all(d["run_id"] == run.id for d in connection.discrepancies)
 
 
+async def test_persist_run_rolls_back_run_row_when_discrepancy_insert_fails(seeded_connection):
+    """Both inserts happen inside one `connection.transaction()` block, so a
+    failure partway through (here, the discrepancies insert) must leave no
+    trace at all -- not an orphaned run row with zero discrepancies, which
+    would make GET /api/reconcile/runs/latest lie about the state of the
+    world.
+    """
+    seeded, user_id = seeded_connection
+    failing_connection = _FailingDiscrepancyInsertConnection()
+    failing_connection.orders = seeded.orders
+    failing_connection.payments = seeded.payments
+    orders = await service.fetch_latest_orders(failing_connection, user_id)
+    payments = await service.fetch_latest_payments(failing_connection, user_id)
+    result = service.run_reconciliation(orders, payments)
+
+    with pytest.raises(RuntimeError):
+        await service.persist_run(
+            failing_connection,
+            user_id=user_id,
+            result=result,
+            orders_count=len(orders),
+            payments_count=len(payments),
+        )
+
+    assert failing_connection.runs == []
+    assert failing_connection.discrepancies == []
+
+
 # -- fetch_latest_run -------------------------------------------------------
 
 
@@ -456,6 +528,55 @@ async def test_fetch_by_type_summary_matches_expected_breakdown(seeded_connectio
     assert by_type["MISSING_PAYMENT"] == {"type": "MISSING_PAYMENT", "count": 1, "value": Decimal("75.00")}
     assert by_type["UNSETTLED_PAYMENT"] == {"type": "UNSETTLED_PAYMENT", "count": 2, "value": Decimal("140.00")}
     assert by_type["ORPHAN_PAYMENT"] == {"type": "ORPHAN_PAYMENT", "count": 1, "value": Decimal("77.00")}
+
+
+async def test_fetch_by_type_summary_reconciled_value_excludes_no_charge_activity():
+    """Reviewer's minimal repro: a single `pending` order with no payment at
+    all classifies as RECONCILED with `reconciled_reason=no_charge_activity`
+    (the engine's fallback for "nothing to verify against"). The run's own
+    `total_reconciled_value` already excludes this (it's the engine's own
+    `reconciled_value`, VERIFIED-only) -- the by_type RECONCILED bucket's
+    `value` must match that, not double-count the unverified $100 that was
+    never actually checked against anything.
+    """
+    connection = _FakeConnection()
+    user_id = uuid.uuid4()
+    order_row = OrderRow(
+        order_id="ORD-PENDING",
+        order_id_norm="ORD-PENDING",
+        order_date=None,
+        customer_email=None,
+        currency="USD",
+        gross_amount=Decimal("100.00"),
+        discount=Decimal("0"),
+        net_amount=Decimal("100.00"),
+        status="pending",
+    )
+    connection.orders.append(
+        _order_dict(order_row, user_id=user_id, batch_id=uuid.uuid4(), created_at=datetime.now(timezone.utc))
+    )
+
+    orders = await service.fetch_latest_orders(connection, str(user_id))
+    payments = await service.fetch_latest_payments(connection, str(user_id))
+    result = service.run_reconciliation(orders, payments)
+
+    # Confirm this is exactly the NO_CHARGE_ACTIVITY repro before asserting
+    # on the fix -- guards against silently testing the wrong scenario.
+    assert len(result.order_discrepancies) == 1
+    classified = result.order_discrepancies[0]
+    assert classified.type.value == "RECONCILED"
+    assert classified.reconciled_reason.value == "no_charge_activity"
+    assert result.reconciled_value == Decimal("0")
+
+    run = await service.persist_run(
+        connection, user_id=str(user_id), result=result, orders_count=len(orders), payments_count=len(payments)
+    )
+    assert run.total_reconciled_value == Decimal("0")
+
+    by_type = {b["type"]: b for b in await service.fetch_by_type_summary(connection, run.id)}
+
+    assert by_type["RECONCILED"]["count"] == 1
+    assert by_type["RECONCILED"]["value"] == run.total_reconciled_value == Decimal("0")
 
 
 # -- fetch_discrepancies -----------------------------------------------------
