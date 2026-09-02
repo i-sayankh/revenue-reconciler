@@ -16,6 +16,7 @@ from app.engine.reconcile import (
     AMOUNT_TOLERANCE,
     DiscrepancyType,
     OrderDiscrepancy,
+    ReconciledReason,
     StatusContradictionReason,
     compute_money_at_risk,
     reconcile,
@@ -138,6 +139,7 @@ def test_tolerance_is_fixed_two_cents(result):
     # FIX-1006: order $50.00 vs payment $50.01, diff $0.01 -- inside tolerance.
     d = _discrepancy_by_id(result, "FIX-1006")
     assert d.type == DiscrepancyType.RECONCILED
+    assert d.reconciled_reason == ReconciledReason.VERIFIED
 
 
 # -- compute_money_at_risk unit-tested directly, with hand-built rows ---
@@ -155,6 +157,95 @@ def _order(order_id: str, net_amount: str, status: str = "completed", currency: 
         net_amount=Decimal(net_amount),
         status=status,
     )
+
+
+def _payment(
+    order_reference: str,
+    amount: str,
+    currency: str = "USD",
+    type: str = "charge",
+    status: str = "settled",
+    transaction_ref: str = "TXN-X",
+) -> PaymentRow:
+    return PaymentRow(
+        transaction_ref=transaction_ref,
+        processed_at=None,
+        order_reference=order_reference,
+        order_reference_norm=order_reference,
+        currency=currency,
+        amount=Decimal(amount),
+        fee=Decimal("0"),
+        net_settled=None,
+        type=type,
+        status=status,
+    )
+
+
+# -- RECONCILED sub-flavors: verified match vs. benign no-activity fallback --
+
+
+def test_fallback_no_charge_activity_is_reconciled_but_not_counted_as_value():
+    # A non-completed, non-cancelled order (e.g. still pending) with zero
+    # matched payments at all: not a discrepancy, but also not a *verified*
+    # match -- nothing was actually checked against a settled payment, so
+    # it must not silently inflate reconciled_value.
+    order = _order("PEND-1", "500.00", status="pending")
+    result = reconcile([order], [])
+    d = result.order_discrepancies[0]
+    assert d.type == DiscrepancyType.RECONCILED
+    assert d.reconciled_reason == ReconciledReason.NO_CHARGE_ACTIVITY
+    assert result.reconciled_value == Decimal("0")
+
+
+def test_fallback_unverified_pending_charge_not_counted_as_value():
+    # A non-completed order with only a pending (never-settled) charge
+    # attempt -- UNSETTLED_PAYMENT is gated on order.status == completed,
+    # so this also falls through to the RECONCILED/NO_CHARGE_ACTIVITY
+    # fallback and must not count toward reconciled_value either.
+    order = _order("PEND-2", "250.00", status="pending")
+    payment = _payment("PEND-2", "250.00", status="pending")
+    result = reconcile([order], [payment])
+    d = result.order_discrepancies[0]
+    assert d.type == DiscrepancyType.RECONCILED
+    assert d.reconciled_reason == ReconciledReason.NO_CHARGE_ACTIVITY
+    assert result.reconciled_value == Decimal("0")
+
+
+def test_verified_reconciled_order_is_counted_as_value():
+    order = _order("OK-1", "100.00")
+    payment = _payment("OK-1", "100.00")
+    result = reconcile([order], [payment])
+    d = result.order_discrepancies[0]
+    assert d.type == DiscrepancyType.RECONCILED
+    assert d.reconciled_reason == ReconciledReason.VERIFIED
+    assert result.reconciled_value == Decimal("100.00")
+
+
+# -- exact tolerance boundary ($0.02) -----------------------------------
+
+
+def test_diff_exactly_at_tolerance_stays_reconciled_and_counted():
+    order = _order("TOL-1", "100.00")
+    payment = _payment("TOL-1", "100.02")  # diff == 0.02, boundary inclusive
+    result = reconcile([order], [payment])
+    d = result.order_discrepancies[0]
+    assert d.type == DiscrepancyType.RECONCILED
+    assert d.reconciled_reason == ReconciledReason.VERIFIED
+    assert result.reconciled_value == Decimal("100.00")
+
+
+def test_diff_just_beyond_tolerance_flips_to_amount_mismatch():
+    order = _order("TOL-2", "100.00")
+    payment = _payment("TOL-2", "100.021")  # diff == 0.021, just past 0.02
+    result = reconcile([order], [payment])
+    assert result.order_discrepancies[0].type == DiscrepancyType.AMOUNT_MISMATCH
+
+
+def test_diff_of_three_cents_is_amount_mismatch():
+    order = _order("TOL-3", "100.00")
+    payment = _payment("TOL-3", "100.03")  # diff == 0.03
+    result = reconcile([order], [payment])
+    assert result.order_discrepancies[0].type == DiscrepancyType.AMOUNT_MISMATCH
 
 
 def test_compute_money_at_risk_sums_all_three_components():

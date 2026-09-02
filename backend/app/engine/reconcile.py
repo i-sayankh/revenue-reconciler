@@ -76,6 +76,24 @@ apart internally:
   `cancelled`. It's a data-hygiene issue, not a financial one.
 
 See `compute_money_at_risk` for how this distinction is used.
+
+RECONCILED also has two internal sub-flavors
+----------------------------------------------
+Both surface as the same top-level `DiscrepancyType.RECONCILED`, but they
+mean different things, so `OrderDiscrepancy` carries a `reconciled_reason`
+(see `ReconciledReason`):
+
+- `VERIFIED`: an actual settled charge was found, matched within tolerance,
+  same currency, agreeing status. This is a genuine, checked reconciliation.
+- `NO_CHARGE_ACTIVITY`: the fallback case -- no settled charge was found to
+  compare against at all (a non-`completed`, non-`cancelled`-with-charge
+  order with nothing settled matched, e.g. an order still `pending` with
+  no payment yet, or only a `pending`/`failed` charge attempt that was
+  never verified). There is no contradicting evidence, so it is not a
+  discrepancy and correctly reports `RECONCILED` -- but nothing was
+  actually *verified* here, so it must never be counted as reconciled
+  *value*. `ReconciliationResult.reconciled_value` only sums `VERIFIED`
+  orders for exactly this reason.
 """
 
 from __future__ import annotations
@@ -113,6 +131,13 @@ class StatusContradictionReason(str, Enum):
     COMPLETED_BUT_REFUNDED = "completed_but_refunded"
 
 
+class ReconciledReason(str, Enum):
+    """Internal sub-flavor of RECONCILED -- see module docstring."""
+
+    VERIFIED = "verified"
+    NO_CHARGE_ACTIVITY = "no_charge_activity"
+
+
 @dataclass(frozen=True, slots=True)
 class OrderDiscrepancy:
     """The classification result for a single order."""
@@ -123,6 +148,7 @@ class OrderDiscrepancy:
     reason: str
     status_contradiction_reason: StatusContradictionReason | None = None
     amount_diff: Decimal | None = None  # payment.amount - order.net_amount
+    reconciled_reason: ReconciledReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,9 +172,22 @@ class ReconciliationResult:
 
     @property
     def reconciled_value(self) -> Decimal:
-        """Sum of `order.net_amount` for every RECONCILED order."""
+        """Sum of `order.net_amount` for VERIFIED-RECONCILED orders only.
+
+        Deliberately excludes the `NO_CHARGE_ACTIVITY` fallback flavor of
+        RECONCILED (see `ReconciledReason`): an order that fell through to
+        RECONCILED for lack of contradicting evidence -- e.g. a non-
+        completed order with no settled charge, possibly only a
+        pending/failed attempt that was never actually verified -- has not
+        had its value checked against anything and must not silently
+        inflate the "value successfully reconciled" headline number.
+        """
         return sum(
-            (d.order.net_amount for d in self.order_discrepancies if d.type == DiscrepancyType.RECONCILED),
+            (
+                d.order.net_amount
+                for d in self.order_discrepancies
+                if d.type == DiscrepancyType.RECONCILED and d.reconciled_reason == ReconciledReason.VERIFIED
+            ),
             Decimal("0"),
         )
 
@@ -234,13 +273,18 @@ def _classify_order(order: OrderRow, matched: list[PaymentRow]) -> OrderDiscrepa
 
     # Nothing further to compare against if there is no settled charge
     # (e.g. a non-completed order with only a pending/failed charge, or no
-    # charge at all) -- there's no discrepancy to raise in that case.
+    # charge at all) -- there's no discrepancy to raise in that case, but
+    # this is a benign fallback, not a verified match: nothing was actually
+    # checked against a settled payment, so `reconciled_reason` is marked
+    # NO_CHARGE_ACTIVITY and `reconciled_value` (see ReconciliationResult)
+    # deliberately excludes it.
     if primary_charge is None:
         return OrderDiscrepancy(
             order=order,
             type=DiscrepancyType.RECONCILED,
             matched_payments=tuple(matched),
             reason="no settled charge to reconcile against; nothing outstanding",
+            reconciled_reason=ReconciledReason.NO_CHARGE_ACTIVITY,
         )
 
     # 5. CURRENCY_MISMATCH -- comparing amounts across currencies is meaningless.
@@ -264,11 +308,14 @@ def _classify_order(order: OrderRow, matched: list[PaymentRow]) -> OrderDiscrepa
         )
 
     # 7. RECONCILED -- matched, same currency, within tolerance, settled, agrees.
+    # This is a *verified* match (an actual settled charge was found and
+    # checked), unlike the NO_CHARGE_ACTIVITY fallback above.
     return OrderDiscrepancy(
         order=order,
         type=DiscrepancyType.RECONCILED,
         matched_payments=tuple(matched),
         reason="matched, same currency, within tolerance, settled",
+        reconciled_reason=ReconciledReason.VERIFIED,
     )
 
 
