@@ -16,6 +16,7 @@ import type { ByTypeRow } from "@/components/dashboard/discrepancy-chart";
 import { DiscrepancyChart } from "@/components/dashboard/discrepancy-chart";
 import type { Discrepancy } from "@/components/dashboard/discrepancy-table";
 import { DiscrepancyTable } from "@/components/dashboard/discrepancy-table";
+import { ExplanationPanel } from "@/components/dashboard/explanation-panel";
 import type { RunSummary } from "@/components/dashboard/stat-cards";
 import { StatCards } from "@/components/dashboard/stat-cards";
 import { ApiError, fetchApi } from "@/lib/api";
@@ -53,6 +54,7 @@ export default function DashboardPage() {
   const [results, setResults] = useState<Discrepancy[]>([]);
   const [total, setTotal] = useState(0);
   const [isLoadingTable, setIsLoadingTable] = useState(false);
+  const [selectedDiscrepancy, setSelectedDiscrepancy] = useState<Discrepancy | null>(null);
 
   // Debounce the free-text search box before it hits the API.
   useEffect(() => {
@@ -136,8 +138,7 @@ export default function DashboardPage() {
   }, [hasRun, typeFilter, search, page]);
 
   function handleRowClick(discrepancy: Discrepancy) {
-    // TODO: open the discrepancy explanation panel (separate feature).
-    void discrepancy;
+    setSelectedDiscrepancy(discrepancy);
   }
 
   if (isLoadingRun) {
@@ -216,6 +217,13 @@ export default function DashboardPage() {
           />
         </CardContent>
       </Card>
+
+      <ExplanationPanel
+        discrepancy={selectedDiscrepancy}
+        onOpenChange={(open) => {
+          if (!open) setSelectedDiscrepancy(null);
+        }}
+      />
     </div>
   );
 }
