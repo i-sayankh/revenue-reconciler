@@ -14,3 +14,13 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+
+    @property
+    def allowed_origins_list(self) -> list[str]:
+        """`ALLOWED_ORIGINS` as a list for `CORSMiddleware`.
+
+        Splits the comma-separated env value (e.g.
+        `"http://localhost:3000,https://<app>.vercel.app"`) into individual
+        origins, trimming whitespace and dropping empty entries.
+        """
+        return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
