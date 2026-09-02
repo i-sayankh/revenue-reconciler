@@ -1,0 +1,8 @@
+node_modules
+__pycache__
+.env
+.venv
+.next
+dist
+.superpowers/
+sample-data/
