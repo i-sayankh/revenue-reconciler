@@ -81,6 +81,18 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* Discrepancy-type palette (dataviz skill: categorical, CVD-validated).
+     Shared by the dashboard's by-type chart and the drill-down table's
+     type badges -- a type is always this color, everywhere on the page. */
+  --type-reconciled: #0ca30c;
+  --type-amount-mismatch: #2a78d6;
+  --type-currency-mismatch: #eb6834;
+  --type-duplicate-charge: #1baf7a;
+  --type-missing-payment: #eda100;
+  --type-orphan-payment: #e87ba4;
+  --type-status-contradiction: #4a3aa7;
+  --type-unsettled-payment: #e34948;
 }
 
 .dark {
@@ -115,6 +127,16 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+
+  /* Discrepancy-type palette, dark-surface steps (see :root for context). */
+  --type-reconciled: #0ca30c;
+  --type-amount-mismatch: #3987e5;
+  --type-currency-mismatch: #d95926;
+  --type-duplicate-charge: #199e70;
+  --type-missing-payment: #c98500;
+  --type-orphan-payment: #d55181;
+  --type-status-contradiction: #9085e9;
+  --type-unsettled-payment: #e66767;
 }
 
 @layer base {
