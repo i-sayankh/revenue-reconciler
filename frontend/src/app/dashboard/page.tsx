@@ -39,7 +39,12 @@ export default function DashboardPage() {
   const [run, setRun] = useState<RunSummary | null>(null);
   const [byType, setByType] = useState<ByTypeRow[]>([]);
   const [isLoadingRun, setIsLoadingRun] = useState(true);
-  const [hasRun, setHasRun] = useState(true);
+  // Tri-state: null means "the run-check hasn't resolved yet" -- distinct
+  // from `false` ("resolved: no run exists"). The discrepancies effect below
+  // must not fire until this is settled one way or the other, otherwise it
+  // races the run-check and fires GET /api/discrepancies (which 404s the
+  // same way "no run" does) before we know a run doesn't exist.
+  const [hasRun, setHasRun] = useState<boolean | null>(null);
 
   const [typeFilter, setTypeFilter] = useState("all");
   const [searchInput, setSearchInput] = useState("");
@@ -90,7 +95,10 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    if (!hasRun) {
+    // Wait for the run-check to resolve (hasRun === null) and skip entirely
+    // once it resolves to false (no run exists -- the empty state handles
+    // that, there is nothing to page/filter/search).
+    if (hasRun !== true) {
       return;
     }
 
