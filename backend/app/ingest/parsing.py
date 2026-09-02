@@ -84,6 +84,20 @@ def _optional_decimal(s: str | None) -> Decimal | None:
     return Decimal(s.strip())
 
 
+def _decimal_default_zero(s: str | None) -> Decimal:
+    """Parse a decimal field that defaults to 0 when blank.
+
+    Used for `discount` and `fee`, the two amount columns whose schema
+    definition is `numeric(12,2) not null default 0` -- a blank value in
+    the source CSV means "no discount/fee charged", not missing data, so
+    it is safe (and matches the DB default) to treat it as `Decimal("0")`
+    instead of raising.
+    """
+    if _is_blank(s):
+        return Decimal("0")
+    return Decimal(s.strip())
+
+
 def _optional_str(s: str | None) -> str | None:
     return None if _is_blank(s) else s
 
@@ -117,7 +131,9 @@ def parse_orders_csv(file: CSVSource) -> list[OrderRow]:
 
     Exact-duplicate rows are deduped before normalization, keeping the
     first occurrence. A null/empty `customer_email` is preserved as
-    `None` rather than crashing or dropping the row.
+    `None` rather than crashing or dropping the row. A blank `discount`
+    parses as `Decimal("0")` (matching the column's schema default)
+    rather than crashing.
     """
     rows = _dedup_exact_rows(_read_rows(file))
     result: list[OrderRow] = []
@@ -131,7 +147,7 @@ def parse_orders_csv(file: CSVSource) -> list[OrderRow]:
                 customer_email=_optional_str(row.get("customer_email")),
                 currency=row["currency"] or "",
                 gross_amount=Decimal(row["gross_amount"]),
-                discount=Decimal(row["discount"]),
+                discount=_decimal_default_zero(row.get("discount")),
                 net_amount=Decimal(row["net_amount"]),
                 status=row["status"] or "",
             )
@@ -145,7 +161,9 @@ def parse_payments_csv(file: CSVSource) -> list[PaymentRow]:
     Exact-duplicate rows are deduped the same way as `parse_orders_csv`
     (none are expected in real payment exports, but the guarantee is
     kept consistent between both parsers). A null/empty `processed_at`
-    is preserved as `None` rather than crashing or dropping the row.
+    is preserved as `None` rather than crashing or dropping the row. A
+    blank `fee` parses as `Decimal("0")` (matching the column's schema
+    default), for the same reason as `discount` in `parse_orders_csv`.
     """
     rows = _dedup_exact_rows(_read_rows(file))
     result: list[PaymentRow] = []
@@ -159,7 +177,7 @@ def parse_payments_csv(file: CSVSource) -> list[PaymentRow]:
                 order_reference_norm=normalize_ref(order_reference),
                 currency=row["currency"] or "",
                 amount=Decimal(row["amount"]),
-                fee=Decimal(row["fee"]),
+                fee=_decimal_default_zero(row.get("fee")),
                 net_settled=_optional_decimal(row.get("net_settled")),
                 type=row["type"] or "",
                 status=row["status"] or "",

@@ -101,6 +101,23 @@ def test_parse_orders_csv_accepts_open_file_handle():
     assert len(rows) == 14
 
 
+def test_parse_orders_csv_blank_discount_defaults_to_zero(tmp_path):
+    # Real-world bug: sample-data/orders.csv has a row with a blank
+    # discount field (schema default is 0), which used to crash the
+    # parser (Decimal("")).
+    csv_path = tmp_path / "orders_blank_discount.csv"
+    csv_path.write_text(
+        "order_id,order_date,customer_email,currency,gross_amount,discount,net_amount,status\n"
+        "ORD-2201,2025-05-19 00:00:00,,USD,120.0,,120.0,completed\n",
+        encoding="utf-8",
+    )
+    rows = parse_orders_csv(csv_path)
+    assert len(rows) == 1
+    assert rows[0].discount == Decimal("0")
+    assert rows[0].gross_amount == Decimal("120.0")
+    assert rows[0].customer_email is None
+
+
 # -- parse_payments_csv ------------------------------------------------------
 
 
@@ -150,3 +167,19 @@ def test_parse_payments_csv_accepts_open_file_handle():
     with open(PAYMENTS_CSV, newline="", encoding="utf-8") as f:
         rows = parse_payments_csv(f)
     assert len(rows) == 17
+
+
+def test_parse_payments_csv_blank_fee_defaults_to_zero(tmp_path):
+    # fee shares discount's schema shape (numeric(12,2) not null default
+    # 0), so it gets the same blank-tolerant treatment even though no
+    # blank fee has been observed in real data yet.
+    csv_path = tmp_path / "payments_blank_fee.csv"
+    csv_path.write_text(
+        "transaction_ref,processed_at,order_reference,currency,amount,fee,net_settled,type,status\n"
+        "TXN-BLANKFEE,01/06/2025 10:05,ORD-9999,USD,120.0,,120.0,charge,settled\n",
+        encoding="utf-8",
+    )
+    rows = parse_payments_csv(csv_path)
+    assert len(rows) == 1
+    assert rows[0].fee == Decimal("0")
+    assert rows[0].amount == Decimal("120.0")
