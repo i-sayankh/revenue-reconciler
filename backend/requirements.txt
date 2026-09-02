@@ -3,5 +3,6 @@ uvicorn[standard]
 pydantic-settings
 python-dotenv
 asyncpg
+pyjwt[crypto]
 pytest
 pytest-asyncio
