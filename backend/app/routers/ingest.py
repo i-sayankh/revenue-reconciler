@@ -16,7 +16,7 @@ import io
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
 from app.auth import get_current_user_id
 from app.db import get_connection
@@ -26,7 +26,14 @@ router = APIRouter()
 
 
 def _to_text_lines(content: bytes) -> io.StringIO:
-    return io.StringIO(content.decode("utf-8"))
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="file is not valid UTF-8 text",
+        ) from exc
+    return io.StringIO(text)
 
 
 @router.post("/ingest/orders")

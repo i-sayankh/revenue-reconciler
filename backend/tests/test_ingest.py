@@ -335,6 +335,32 @@ def test_ingest_orders_route_skips_insert_when_all_rows_rejected():
     assert fake_connection.calls == []
 
 
+def test_ingest_orders_route_rejects_non_utf8_upload_with_400():
+    fake_connection = _FakeConnection()
+    app = _make_test_app(fake_connection, str(uuid.uuid4()))
+    client = TestClient(app)
+    # 0xff 0xfe is not valid UTF-8 (and not valid as a continuation byte
+    # sequence either), so decode("utf-8") raises UnicodeDecodeError.
+    non_utf8_bytes = b"\xff\xfe\x00\x01garbage"
+
+    response = client.post("/api/ingest/orders", files={"file": ("orders.csv", non_utf8_bytes, "text/csv")})
+
+    assert response.status_code == 400
+    assert fake_connection.calls == []
+
+
+def test_ingest_payments_route_rejects_non_utf8_upload_with_400():
+    fake_connection = _FakeConnection()
+    app = _make_test_app(fake_connection, str(uuid.uuid4()))
+    client = TestClient(app)
+    non_utf8_bytes = b"\xff\xfe\x00\x01garbage"
+
+    response = client.post("/api/ingest/payments", files={"file": ("payments.csv", non_utf8_bytes, "text/csv")})
+
+    assert response.status_code == 400
+    assert fake_connection.calls == []
+
+
 def test_ingest_orders_route_requires_auth():
     app = FastAPI()
     app.include_router(ingest_router.router, prefix="/api")
