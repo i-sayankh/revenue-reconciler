@@ -46,7 +46,7 @@ export async function fetchApi(path: string, options: RequestInit = {}) {
     let message = response.statusText || "Request failed.";
     try {
       const body = await response.clone().json();
-      message = body?.detail ?? body?.message ?? message;
+      message = body?.error?.message ?? body?.detail ?? body?.message ?? message;
     } catch {
       // Response body wasn't JSON — fall back to the status text.
     }
