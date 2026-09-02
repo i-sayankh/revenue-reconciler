@@ -4,5 +4,7 @@ pydantic-settings
 python-dotenv
 asyncpg
 pyjwt[crypto]
+python-multipart
 pytest
 pytest-asyncio
+httpx
