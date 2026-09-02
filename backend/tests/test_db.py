@@ -29,6 +29,18 @@ class _FakePool:
         self.closed = True
 
 
+class _FakeCodecConnection:
+    """Records `set_type_codec` calls so the init callback can be asserted on."""
+
+    def __init__(self):
+        self.registered: list[dict] = []
+
+    async def set_type_codec(self, pg_type, *, encoder, decoder, schema):
+        self.registered.append(
+            {"pg_type": pg_type, "encoder": encoder, "decoder": decoder, "schema": schema}
+        )
+
+
 @pytest.fixture(autouse=True)
 def reset_pool():
     """Ensure module-level pool state doesn't leak between tests."""
@@ -46,7 +58,7 @@ async def test_connect_db_creates_and_reuses_pool(monkeypatch):
     fake_pool = _FakePool()
     calls = []
 
-    async def fake_create_pool(dsn):
+    async def fake_create_pool(dsn, init=None):
         calls.append(dsn)
         return fake_pool
 
@@ -70,7 +82,7 @@ async def test_connect_db_creates_and_reuses_pool(monkeypatch):
 async def test_close_db_closes_and_clears_pool(monkeypatch):
     fake_pool = _FakePool()
 
-    async def fake_create_pool(dsn):
+    async def fake_create_pool(dsn, init=None):
         return fake_pool
 
     monkeypatch.setattr(db_module.asyncpg, "create_pool", fake_create_pool)
@@ -92,7 +104,7 @@ async def test_close_db_closes_and_clears_pool(monkeypatch):
 async def test_get_connection_acquires_from_pool(monkeypatch):
     fake_pool = _FakePool()
 
-    async def fake_create_pool(dsn):
+    async def fake_create_pool(dsn, init=None):
         return fake_pool
 
     monkeypatch.setattr(db_module.asyncpg, "create_pool", fake_create_pool)
@@ -107,3 +119,44 @@ async def test_get_connection_acquires_from_pool(monkeypatch):
     assert isinstance(connection, _FakeConnection)
     with pytest.raises(StopAsyncIteration):
         await agen.__anext__()
+
+
+async def test_connect_db_passes_init_callback_to_create_pool(monkeypatch):
+    fake_pool = _FakePool()
+    captured = {}
+
+    async def fake_create_pool(dsn, init=None):
+        captured["init"] = init
+        return fake_pool
+
+    monkeypatch.setattr(db_module.asyncpg, "create_pool", fake_create_pool)
+
+    class FakeSettings:
+        database_url = "postgresql://fake-user:fake-pass@localhost/fake"
+
+    await db_module.connect_db(settings=FakeSettings())
+
+    assert captured["init"] is db_module._init_connection
+
+
+async def test_init_connection_registers_jsonb_and_json_codecs():
+    """The init callback must decode jsonb/json columns to dict/list, not str.
+
+    Without this, `discrepancies.detail`/`discrepancies.explanation` (both
+    jsonb) would come back from asyncpg as raw JSON text, silently
+    mismatching the `dict[str, Any] | None` type on `app.models.Discrepancy`.
+    """
+    fake_connection = _FakeCodecConnection()
+
+    await db_module._init_connection(fake_connection)
+
+    registered_types = [entry["pg_type"] for entry in fake_connection.registered]
+    assert registered_types == ["jsonb", "json"]
+
+    for entry in fake_connection.registered:
+        assert entry["schema"] == "pg_catalog"
+        # encoder/decoder round-trip a dict the way a real jsonb column would.
+        payload = {"reason": "currency mismatch", "count": 2}
+        encoded = entry["encoder"](payload)
+        assert isinstance(encoded, str)
+        assert entry["decoder"](encoded) == payload
