@@ -37,7 +37,7 @@ function FileSlot({
   file: File | null;
   error: string | null;
   disabled: boolean;
-  onChange: (file: File | null) => void;
+  onChange: (file: File | null, error: string | null) => void;
 }) {
   return (
     <Card>
@@ -55,18 +55,19 @@ function FileSlot({
             const selected = event.target.files?.[0] ?? null;
 
             if (!selected) {
-              onChange(null);
+              onChange(null, null);
               return;
             }
 
             if (!isCsvFile(selected)) {
-              onChange(null);
               event.target.value = "";
-              toast.error(`${title}: please select a .csv file.`);
+              const message = "Please select a .csv file.";
+              onChange(null, message);
+              toast.error(`${title}: ${message}`);
               return;
             }
 
-            onChange(selected);
+            onChange(selected, null);
           }}
         />
         {error ? <p className="text-destructive text-sm">{error}</p> : null}
@@ -89,8 +90,8 @@ export default function UploadPage() {
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  function setFile(key: FileSlotKey, file: File | null) {
-    setErrors((prev) => ({ ...prev, [key]: null }));
+  function setFile(key: FileSlotKey, file: File | null, error: string | null) {
+    setErrors((prev) => ({ ...prev, [key]: error }));
     if (key === "orders") {
       setOrdersFile(file);
     } else {
@@ -172,7 +173,7 @@ export default function UploadPage() {
             file={ordersFile}
             error={errors.orders}
             disabled={isSubmitting}
-            onChange={(file) => setFile("orders", file)}
+            onChange={(file, error) => setFile("orders", file, error)}
           />
           <FileSlot
             title="Payments CSV"
@@ -180,7 +181,7 @@ export default function UploadPage() {
             file={paymentsFile}
             error={errors.payments}
             disabled={isSubmitting}
-            onChange={(file) => setFile("payments", file)}
+            onChange={(file, error) => setFile("payments", file, error)}
           />
         </div>
 
