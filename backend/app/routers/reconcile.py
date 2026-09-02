@@ -22,6 +22,8 @@ decimal library) rather than assume a raw JSON number.
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -30,6 +32,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.auth import get_current_user_id
 from app.db import get_connection
+from app.llm.groq_client import explain_discrepancy
 from app.models import Discrepancy, ReconciliationRun
 from app.reconcile import service
 
@@ -39,6 +42,7 @@ _NO_UPLOADS_DETAIL = (
     "no uploaded orders or payments found for this user -- upload both files before running reconciliation"
 )
 _NO_RUN_DETAIL = "no reconciliation run found for this user -- run POST /api/reconcile/run first"
+_NO_DISCREPANCY_DETAIL = "no discrepancy found with that id for this user"
 
 
 def _run_to_dict(run: ReconciliationRun) -> dict[str, Any]:
@@ -199,3 +203,46 @@ async def list_discrepancies(
         "page_size": page_size,
         "results": [_discrepancy_to_dict(r) for r in rows],
     }
+
+
+@router.post("/discrepancies/{discrepancy_id}/explain")
+async def explain_discrepancy_route(
+    discrepancy_id: uuid.UUID,
+    user_id: str = Depends(get_current_user_id),
+    connection: asyncpg.Connection = Depends(get_connection),
+) -> dict[str, Any]:
+    """LLM-generated explanation for one discrepancy, cached after first use.
+
+    Scoped by `user_id`: `404` if `discrepancy_id` doesn't belong to the
+    caller (or doesn't exist at all) -- existence is never leaked.
+
+    If `discrepancies.explanation` is already set for this row, it is
+    returned immediately without calling Groq again. Otherwise the prompt
+    is built from this discrepancy's own stored fields, Groq is called
+    (see `app.llm.groq_client.explain_discrepancy` for the retry/fallback
+    behavior -- this never raises), and the result is persisted
+    (`explanation` + `explained_at`) before being returned.
+
+    Response: `{"explanation": {"summary", "likely_cause",
+    "recommended_action", "confidence"}, "explained_at": <timestamp>}`.
+    """
+    discrepancy = await service.fetch_discrepancy_for_user(
+        connection, discrepancy_id=discrepancy_id, user_id=user_id
+    )
+    if discrepancy is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NO_DISCREPANCY_DETAIL)
+
+    if discrepancy.explanation is not None:
+        return {"explanation": discrepancy.explanation, "explained_at": discrepancy.explained_at}
+
+    explanation = await explain_discrepancy(_discrepancy_to_dict(discrepancy))
+    explanation_dict = explanation.model_dump()
+    explained_at = datetime.now(timezone.utc)
+
+    await service.persist_discrepancy_explanation(
+        connection,
+        discrepancy_id=discrepancy.id,
+        explanation=explanation_dict,
+        explained_at=explained_at,
+    )
+    return {"explanation": explanation_dict, "explained_at": explained_at}

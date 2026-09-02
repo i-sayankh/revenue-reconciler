@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -466,3 +467,41 @@ async def fetch_discrepancies(
     )
     rows = [Discrepancy.from_record(r) for r in records]
     return rows, total
+
+
+# -- fetch/persist a single discrepancy's explanation (POST /api/discrepancies/{id}/explain) --
+
+
+async def fetch_discrepancy_for_user(
+    connection: asyncpg.Connection, *, discrepancy_id: uuid.UUID, user_id: str | uuid.UUID
+) -> Discrepancy | None:
+    """One discrepancy row, scoped to the caller.
+
+    `None` both when the id doesn't exist at all and when it belongs to a
+    different user -- callers must turn this into a 404 either way so
+    existence is never leaked across users.
+    """
+    user_uuid = uuid.UUID(str(user_id))
+    record = await connection.fetchrow(
+        "select * from discrepancies where id = $1 and user_id = $2",
+        discrepancy_id,
+        user_uuid,
+    )
+    return Discrepancy.from_record(record) if record else None
+
+
+async def persist_discrepancy_explanation(
+    connection: asyncpg.Connection,
+    *,
+    discrepancy_id: uuid.UUID,
+    explanation: dict[str, Any],
+    explained_at: datetime,
+) -> None:
+    """Cache a generated explanation on the discrepancy row so a repeat
+    dashboard view returns it without re-spending a Groq call."""
+    await connection.execute(
+        "update discrepancies set explanation = $1, explained_at = $2 where id = $3",
+        explanation,
+        explained_at,
+        discrepancy_id,
+    )
